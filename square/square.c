@@ -82,7 +82,7 @@ typedef struct
 
 void reset_odo (odotype * p);
 void update_odo (odotype * p);
-double min(double a, double b);
+double min (double a, double b);
 
 
 
@@ -97,7 +97,10 @@ typedef struct
   int curcmd;
   double speedcmd;
   double dist;
+  // Angle is the desired angle we want to turn
   double angle;
+  // theta is the current angle the SMR is facing
+  double theta;
   double left_pos, right_pos;
   // parameters
   double w;
@@ -146,7 +149,8 @@ main ()
   int running, n = 0, arg, time = 0;
   double dist = 0, angle = 0;
 
-  FILE *fptr = fopen("data/debug.dat", "w+");
+  FILE *fptr = fopen ("data/debug.dat", "w+");
+  FILE *laser_ptr = fopen ("data/laser_debug.dat", "w+");
 
   /* Establish connection to robot sensors and actuators.
    */
@@ -236,7 +240,7 @@ main ()
 	{
 	  xmllaser = xml_in_init (4096, 32);
 	  printf (" laserserver xml initialized \n");
-	  len = sprintf (buf, "push  t=0.2 cmd='mrcobst width=0.4'\n");
+	  len = sprintf(buf,"scanpush cmd='zoneobst'\n");
 	  send (lmssrv.sockfd, buf, len, 0);
 	}
 
@@ -282,32 +286,41 @@ main ()
 / mission statemachine   
 */
       sm_update (&mission);
-  	  fprintf(fptr, "%d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n", mission.time, mot.motorspeed_l, mot.motorspeed_r, odo.x, odo.y, odo.theta);
+      fprintf (fptr, "%d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\n", mission.time,
+	       mot.motorspeed_l, mot.motorspeed_r, odo.x, odo.y, odo.theta);
+      for (int i=0; i<9; i++) {
+      	if (i == 8) {
+			fprintf(laser_ptr, "%.4f", laserpar[i]);	
+      	} else {
+      		fprintf(laser_ptr, "%.4f\t", laserpar[i]);
+      	}
+      }
+      fprintf(laser_ptr, "\n");
       switch (mission.state)
 	{
 	case ms_init:
-	  n = 1;
-	  dist = 2;
+	  n = 4;
+	  dist = 1;
 	  angle = 90.0 / 180 * M_PI;
 	  mission.state = ms_fwd;
 	  break;
 
 	case ms_fwd:
-	  if (fwd (dist, 0.4, mission.time))
+	  if (fwd (dist, 0.3, mission.time))
 	    mission.state = ms_turn;
 	  break;
 
-	/*case ms_turn:
-	  if (turn (angle, 0.3, mission.time))
-	    {
-	      n = n - 1;
-	      if (n == 0)
-		mission.state = ms_end;
-	      else
-		mission.state = ms_fwd;
-	    }
-	  break;
-*/
+	  case ms_turn:
+	     if (turn (angle, 0.3, mission.time))
+	     {
+	     n = n - 1;
+	     if (n == 0)
+	     mission.state = ms_end;
+	     else
+	     mission.state = ms_fwd;
+	     }
+	     break;
+	   
 	case ms_end:
 	  mot.cmd = mot_stop;
 	  running = 0;
@@ -317,6 +330,7 @@ main ()
 
       mot.left_pos = odo.left_pos;
       mot.right_pos = odo.right_pos;
+      mot.theta = odo.theta;
       update_motcon (&mot);
       speedl->data[0] = 100 * mot.motorspeed_l;
       speedl->updated = 1;
@@ -339,7 +353,8 @@ main ()
   speedr->updated = 1;
   rhdSync ();
   rhdDisconnect ();
-  fclose(fptr);
+  fclose (fptr);
+  fclose (laser_ptr);
   exit (0);
 }
 
@@ -390,8 +405,8 @@ update_odo (odotype * p)
   u = (ur + ul) / 2;
 
   p->theta += (ur - ul) / p->w;
-  p->x += u * cos(p->theta);
-  p->y += u * sin(p->theta);
+  p->x += u * cos (p->theta);
+  p->y += u * sin (p->theta);
 
 }
 
@@ -415,10 +430,7 @@ update_motcon (motiontype * p)
 	  break;
 
 	case mot_turn:
-	  if (p->angle > 0)
-	    p->startpos = p->right_pos;
-	  else
-	    p->startpos = p->left_pos;
+	  p->startpos = p->theta;
 	  p->curcmd = mot_turn;
 	  break;
 
@@ -439,8 +451,8 @@ update_motcon (motiontype * p)
       if ((p->right_pos + p->left_pos) / 2 - p->startpos > p->dist)
 	{
 	  p->finished = 1;
-      p->motorspeed_l = 0;
-      p->motorspeed_r = 0;
+	  p->motorspeed_l = 0;
+	  p->motorspeed_r = 0;
 	}
       else
 	{
@@ -448,11 +460,13 @@ update_motcon (motiontype * p)
 
 	  acc = 0.5;
 
-      d = p->dist - ((p->right_pos + p->left_pos) / 2 - p->startpos);
-      vmax = sqrt(2*acc*d);
+	  d = p->dist - ((p->right_pos + p->left_pos) / 2 - p->startpos);
+	  vmax = sqrt (2 * acc * d);
 
-	  p->motorspeed_l = min(vmax, min(p->speedcmd, p->motorspeed_l + acc / 100));
-	  p->motorspeed_r = min(vmax, min(p->speedcmd, p->motorspeed_r + acc / 100));
+	  p->motorspeed_l =
+	    min (vmax, min (p->speedcmd, p->motorspeed_l + acc / 100));
+	  p->motorspeed_r =
+	    min (vmax, min (p->speedcmd, p->motorspeed_r + acc / 100));
 
 
 	}
@@ -460,33 +474,54 @@ update_motcon (motiontype * p)
 
     case mot_turn:
       if (p->angle > 0)
-	{
-	  p->motorspeed_l = 0;
-	  if (p->right_pos - p->startpos < fabs(p->angle) * p->w / 2)
-	    {
-	      p->motorspeed_r = p->speedcmd;
-	      p->motorspeed_l = -p->speedcmd;
-	    }
-	  else
-	    {
-	      p->motorspeed_r = 0;
-	      p->finished = 1;
-	    }
-	}
-      else
-	{
-	  p->motorspeed_r = 0;
-	  if (p->left_pos - p->startpos < fabs(p->angle) * p->w / 2)
-	    {
-	      p->motorspeed_l = p->speedcmd;
-	      p->motorspeed_r = -p->speedcmd;
-	    }
-	  else
-	    {
-	      p->motorspeed_l = 0;
-	      p->finished = 1;
-	    }
-	}
+				{
+				  p->motorspeed_l = 0;
+				  if (fabs (p->theta - p->startpos) < fabs (p->angle))
+				    {
+				      double acc, vmax, d, v;
+
+				      acc = 0.5;
+
+				      d = (fabs(p->angle) - fabs(p->theta - p->startpos)) * p->w / 2;
+				      vmax = sqrt (2 * acc * d);
+				      v = min (vmax, min (p->speedcmd, p->motorspeed_r + acc / 100));
+
+
+				      p->motorspeed_r = v;
+				      p->motorspeed_l = -v;
+
+
+				    }
+				  else
+				    {
+				      p->motorspeed_r = 0;
+				      p->finished = 1;
+				    }
+				}
+			      else
+				{
+				  p->motorspeed_r = 0;
+				  if (fabs (p->theta - p->startpos) < fabs (p->angle))
+				    {
+				      double acc, vmax, d, v;
+
+				      acc = 0.5;
+
+				      d = (fabs(p->angle) - fabs(p->theta - p->startpos)) * p->w / 2;
+				      vmax = sqrt (2 * acc * d);
+
+				      v = min (vmax, min (p->speedcmd, p->motorspeed_l + acc / 100));
+
+				      p->motorspeed_l = v;
+				      p->motorspeed_r = -v;
+
+				    }
+				  else
+				    {
+				      p->motorspeed_l = 0;
+				      p->finished = 1;
+				    }
+				}
 
       break;
     }
@@ -537,10 +572,11 @@ sm_update (smtype * p)
 }
 
 double
-min(double a, double b)
+min (double a, double b)
 {
-	if (a < b) {
-		return a;
-	}
-	return b;
+  if (a < b)
+    {
+      return a;
+    }
+  return b;
 }
